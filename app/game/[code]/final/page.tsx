@@ -6,28 +6,97 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Trophy, Medal, Award, Home, RotateCcw, Sparkles } from 'lucide-react';
-import { mockGameStore } from '@/lib/mock-game-store';
 import { getAvatarUrl } from '@/lib/game-utils';
+import { usePusher } from '@/hooks/use-pusher';
 import Link from 'next/link';
+import type { Player, GameSettings, HostSessionInfo, PlayerSessionInfo } from '@/lib/types';
+
+interface GameState {
+  code: string;
+  status: string;
+  settings: GameSettings;
+  players: Player[];
+}
 
 export default function FinalResultsPage({ params }: { params: Promise<{ code: string }> }) {
   const resolvedParams = use(params);
   const router = useRouter();
-  const [game, setGame] = useState<any>(null);
+  const [game, setGame] = useState<GameState | null>(null);
   const [showConfetti, setShowConfetti] = useState(true);
+  const [isHost, setIsHost] = useState(false);
+  const [hostId, setHostId] = useState<string | null>(null);
+  const [playerId, setPlayerId] = useState<string | null>(null);
+  const [hostToken, setHostToken] = useState<string | null>(null);
+  const [playerToken, setPlayerToken] = useState<string | null>(null);
 
+  // Load user info from sessionStorage
   useEffect(() => {
-    const gameData = mockGameStore.getGame(resolvedParams.code);
-    if (!gameData) {
-      router.push('/');
-      return;
+    const hostInfo = sessionStorage.getItem('hostInfo');
+    const playerInfo = sessionStorage.getItem('playerInfo');
+
+    if (hostInfo) {
+      const parsed = JSON.parse(hostInfo) as HostSessionInfo;
+      if (parsed.gameCode === resolvedParams.code) {
+        setIsHost(true);
+        setHostId(parsed.hostId);
+        setHostToken(parsed.hostToken);
+      }
     }
 
-    setGame(gameData);
+    if (playerInfo) {
+      const parsed = JSON.parse(playerInfo) as PlayerSessionInfo;
+      if (parsed.gameCode === resolvedParams.code) {
+        setPlayerId(parsed.playerId);
+        setPlayerToken(parsed.playerToken);
+      }
+    }
+  }, [resolvedParams.code]);
+
+  // Fetch game state
+  useEffect(() => {
+    const fetchGame = async () => {
+      try {
+        const response = await fetch(`/api/game/${resolvedParams.code}`, {
+          headers: {
+            ...(hostToken && { 'x-host-token': hostToken }),
+            ...(playerToken && { 'x-player-token': playerToken }),
+          },
+        });
+
+        if (!response.ok) {
+          router.push('/');
+          return;
+        }
+
+        const data = await response.json();
+        if (data.success && data.game) {
+          setGame({
+            code: data.game.code,
+            status: data.game.status,
+            settings: data.game.settings,
+            players: data.game.players,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch game:', err);
+        router.push('/');
+      }
+    };
+
+    fetchGame();
 
     // Hide confetti after animation
-    setTimeout(() => setShowConfetti(false), 3000);
-  }, [resolvedParams.code, router]);
+    const confettiTimer = setTimeout(() => setShowConfetti(false), 3000);
+    return () => clearTimeout(confettiTimer);
+  }, [resolvedParams.code, router, hostToken, playerToken]);
+
+  // Set up Pusher connection (for any late events)
+  usePusher({
+    gameCode: resolvedParams.code,
+    userId: isHost ? hostId || undefined : playerId || undefined,
+    userName: isHost ? 'Host' : 'Player',
+    userRole: isHost ? 'host' : 'player',
+  });
 
   if (!game) {
     return <div className="min-h-screen flex items-center justify-center">Loading...</div>;
@@ -67,6 +136,20 @@ export default function FinalResultsPage({ params }: { params: Promise<{ code: s
         return 'from-slate-200 to-slate-400';
     }
   };
+
+  if (!winner) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500">
+        <Card className="p-8 text-center">
+          <h2 className="text-2xl font-bold mb-4">Game Over</h2>
+          <p className="text-slate-600 mb-4">No players found.</p>
+          <Link href="/">
+            <Button>Back to Home</Button>
+          </Link>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500 py-8 px-4 relative overflow-hidden">
@@ -124,7 +207,7 @@ export default function FinalResultsPage({ params }: { params: Promise<{ code: s
                     <span className="font-bold text-indigo-600">{winner.points}</span>
                     <span className="text-slate-600">points</span>
                   </div>
-                  <span className="text-slate-300">•</span>
+                  <span className="text-slate-300">|</span>
                   <div className="flex items-center gap-2">
                     <span className="font-bold text-green-600">{winner.health}</span>
                     <span className="text-slate-600">HP remaining</span>
@@ -195,7 +278,7 @@ export default function FinalResultsPage({ params }: { params: Promise<{ code: s
                     idx < 3
                       ? 'bg-gradient-to-r from-indigo-50 to-purple-50 border-2 border-indigo-200'
                       : 'bg-slate-50 border border-slate-200'
-                  }`}
+                  } ${player.id === playerId ? 'ring-2 ring-indigo-400' : ''}`}
                 >
                   <div className="flex items-center gap-4">
                     <div className="flex items-center justify-center w-12">

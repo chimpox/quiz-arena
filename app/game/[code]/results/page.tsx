@@ -1,62 +1,179 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, useCallback, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { CheckCircle2, XCircle, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { mockGameStore } from '@/lib/mock-game-store';
 import { getAvatarUrl } from '@/lib/game-utils';
+import { usePusher } from '@/hooks/use-pusher';
+import type { Player, Question, GameSettings, HostSessionInfo, PlayerSessionInfo } from '@/lib/types';
 import Loading from './loading';
+
+interface GameState {
+  code: string;
+  status: string;
+  settings: GameSettings;
+  questions: Question[];
+  players: Player[];
+  currentQuestionIndex: number;
+}
 
 export default function ResultsPage({ params }: { params: Promise<{ code: string }> }) {
   const resolvedParams = use(params);
   const router = useRouter();
   const searchParams = useSearchParams();
   const [countdown, setCountdown] = useState(5);
-  const [game, setGame] = useState<any>(null);
+  const [game, setGame] = useState<GameState | null>(null);
+  const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
+  const [isHost, setIsHost] = useState(false);
+  const [hostId, setHostId] = useState<string | null>(null);
+  const [hostToken, setHostToken] = useState<string | null>(null);
+  const [playerId, setPlayerId] = useState<string | null>(null);
+  const [playerToken, setPlayerToken] = useState<string | null>(null);
 
   const answerIndex = parseInt(searchParams.get('answer') ?? '-1');
   const isCorrect = searchParams.get('correct') === 'true';
   const pointsEarned = parseInt(searchParams.get('points') ?? '0');
+  const healthChange = parseInt(searchParams.get('healthChange') ?? '0');
 
+  // Load user info from sessionStorage
   useEffect(() => {
-    const gameData = mockGameStore.getGame(resolvedParams.code);
-    if (!gameData) {
-      router.push('/');
-      return;
+    const hostInfo = sessionStorage.getItem('hostInfo');
+    const playerInfo = sessionStorage.getItem('playerInfo');
+
+    if (hostInfo) {
+      const parsed = JSON.parse(hostInfo) as HostSessionInfo;
+      if (parsed.gameCode === resolvedParams.code) {
+        setIsHost(true);
+        setHostId(parsed.hostId);
+        setHostToken(parsed.hostToken);
+      }
     }
 
-    setGame(gameData);
+    if (playerInfo) {
+      const parsed = JSON.parse(playerInfo) as PlayerSessionInfo;
+      if (parsed.gameCode === resolvedParams.code) {
+        setPlayerId(parsed.playerId);
+        setPlayerToken(parsed.playerToken);
+      }
+    }
+  }, [resolvedParams.code]);
 
-    // Update player stats (mock)
-    if (gameData.players.length > 0) {
-      const player = gameData.players[0];
-      const healthChange = isCorrect ? gameData.settings.healthGainCorrect : -gameData.settings.healthLossWrong;
-      const newHealth = Math.max(0, Math.min(player.maxHealth, player.health + healthChange));
-      const newPoints = player.points + pointsEarned;
+  // Fetch game state
+  useEffect(() => {
+    const fetchGame = async () => {
+      try {
+        const response = await fetch(`/api/game/${resolvedParams.code}`, {
+          headers: {
+            ...(hostToken && { 'x-host-token': hostToken }),
+            ...(playerToken && { 'x-player-token': playerToken }),
+          },
+        });
 
-      mockGameStore.updatePlayer(resolvedParams.code, player.id, {
-        health: newHealth,
-        points: newPoints,
+        if (!response.ok) {
+          router.push('/');
+          return;
+        }
+
+        const data = await response.json();
+        if (data.success && data.game) {
+          // If game has already moved to final results, redirect there
+          if (data.game.status === 'final-results') {
+            router.push(`/game/${resolvedParams.code}/final`);
+            return;
+          }
+
+          // If game is back in lobby (shouldn't happen), redirect
+          if (data.game.status === 'lobby') {
+            router.push(`/lobby/${resolvedParams.code}`);
+            return;
+          }
+
+          setGame({
+            code: data.game.code,
+            status: data.game.status,
+            settings: data.game.settings,
+            questions: data.game.questions || [],
+            players: data.game.players,
+            currentQuestionIndex: data.game.currentQuestionIndex,
+          });
+
+          // Find current player
+          if (playerId && data.game.players) {
+            const player = data.game.players.find((p: Player) => p.id === playerId);
+            if (player) setCurrentPlayer(player);
+          } else if (data.game.players.length > 0) {
+            setCurrentPlayer(data.game.players[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch game:', err);
+        router.push('/');
+      }
+    };
+
+    fetchGame();
+  }, [resolvedParams.code, router, hostToken, playerToken, playerId]);
+
+  // Pusher event handlers
+  const handleNextQuestion = useCallback((data: { questionIndex: number; question: Question; players: Player[] }) => {
+    router.push(`/game/${resolvedParams.code}`);
+  }, [router, resolvedParams.code]);
+
+  const handleGameEnded = useCallback(() => {
+    router.push(`/game/${resolvedParams.code}/final`);
+  }, [router, resolvedParams.code]);
+
+  // Set up Pusher connection
+  usePusher({
+    gameCode: resolvedParams.code,
+    userId: isHost ? hostId || undefined : playerId || undefined,
+    userName: isHost ? 'Host' : currentPlayer?.name,
+    userRole: isHost ? 'host' : 'player',
+    onNextQuestion: handleNextQuestion,
+    onGameEnded: handleGameEnded,
+  });
+
+  // Function to advance game (host only)
+  const advanceGame = useCallback(async () => {
+    if (!hostId || !hostToken) return;
+
+    try {
+      const response = await fetch(`/api/game/${resolvedParams.code}/next`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hostId, hostToken }),
       });
-    }
-  }, [resolvedParams.code, router, isCorrect, pointsEarned]);
 
+      const data = await response.json();
+
+      if (data.success) {
+        if (data.hasMore) {
+          router.push(`/game/${resolvedParams.code}`);
+        } else {
+          router.push(`/game/${resolvedParams.code}/final`);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to advance game:', err);
+      // Fallback navigation
+      if (game && game.questions && game.currentQuestionIndex < game.questions.length - 1) {
+        router.push(`/game/${resolvedParams.code}`);
+      } else {
+        router.push(`/game/${resolvedParams.code}/final`);
+      }
+    }
+  }, [hostId, hostToken, resolvedParams.code, router, game]);
+
+  // Countdown timer for everyone
   useEffect(() => {
     if (!game) return;
 
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
-          // Move to next question or final results
-          const hasMoreQuestions = mockGameStore.nextQuestion(resolvedParams.code);
-          if (hasMoreQuestions) {
-            router.push(`/game/${resolvedParams.code}`);
-          } else {
-            router.push(`/game/${resolvedParams.code}/final`);
-          }
           return 0;
         }
         return prev - 1;
@@ -64,26 +181,60 @@ export default function ResultsPage({ params }: { params: Promise<{ code: string
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [game, resolvedParams.code, router]);
+  }, [game]);
+
+  // Handle countdown reaching 0 - separate effect to avoid setState during render
+  useEffect(() => {
+    if (countdown !== 0 || !game) return;
+
+    if (isHost && hostId && hostToken) {
+      // Host: advance the game via API
+      advanceGame();
+    } else if (!isHost) {
+      // Player: poll API to check if game has moved on (fallback if Pusher fails)
+      const checkGameState = async () => {
+        try {
+          const response = await fetch(`/api/game/${resolvedParams.code}`, {
+            headers: playerToken ? { 'x-player-token': playerToken } : {},
+          });
+          const data = await response.json();
+          if (data.success && data.game) {
+            if (data.game.status === 'final-results') {
+              router.push(`/game/${resolvedParams.code}/final`);
+            } else if (data.game.status === 'playing') {
+              // Game has moved to next question
+              router.push(`/game/${resolvedParams.code}`);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to check game state:', err);
+        }
+      };
+      // Small delay then check
+      setTimeout(checkGameState, 1000);
+    }
+  }, [countdown, game, isHost, hostId, hostToken, playerToken, resolvedParams.code, router, advanceGame]);
 
   if (!game) {
     return <Loading />;
   }
 
-  const currentQuestion = game.questions[game.currentQuestionIndex];
-  const correctAnswer = currentQuestion.options[currentQuestion.correctIndex];
-  const currentPlayer = game.players[0];
-  const healthChange = isCorrect ? game.settings.healthGainCorrect : -game.settings.healthLossWrong;
-  const newHealth = Math.max(0, Math.min(currentPlayer.maxHealth, currentPlayer.health + healthChange));
-  const newPoints = currentPlayer.points + pointsEarned;
+  const currentQuestion = game.questions?.[game.currentQuestionIndex];
+  const correctAnswer = currentQuestion?.options?.[currentQuestion?.correctIndex] || 'N/A';
 
-  // Mock rank changes for demo
+  // Calculate new health for display
+  const playerHealth = currentPlayer?.health || 10;
+  const playerMaxHealth = currentPlayer?.maxHealth || 15;
+  const newHealth = Math.max(0, Math.min(playerMaxHealth, playerHealth));
+  const newPoints = currentPlayer?.points || 0;
+
+  // Sort players by points for leaderboard
   const topPlayers = [...game.players]
     .sort((a, b) => b.points - a.points)
     .slice(0, 5)
-    .map((p, idx) => ({
+    .map((p, idx, arr) => ({
       ...p,
-      rankChange: idx === 0 ? 2 : idx === 1 ? -1 : 0,
+      rankChange: 0, // Could track previous ranks for real rank changes
     }));
 
   return (
@@ -112,12 +263,14 @@ export default function ResultsPage({ params }: { params: Promise<{ code: string
 
         <CardContent className="space-y-6">
           {/* Correct Answer */}
-          <div className="bg-slate-50 p-4 rounded-lg border-2 border-slate-200">
-            <p className="text-sm text-slate-600 mb-1">Correct Answer:</p>
-            <p className="text-lg font-semibold text-slate-800">
-              {String.fromCharCode(65 + currentQuestion.correctIndex)}. {correctAnswer}
-            </p>
-          </div>
+          {currentQuestion && (
+            <div className="bg-slate-50 p-4 rounded-lg border-2 border-slate-200">
+              <p className="text-sm text-slate-600 mb-1">Correct Answer:</p>
+              <p className="text-lg font-semibold text-slate-800">
+                {String.fromCharCode(65 + currentQuestion.correctIndex)}. {correctAnswer}
+              </p>
+            </div>
+          )}
 
           {/* Stats Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -133,9 +286,9 @@ export default function ResultsPage({ params }: { params: Promise<{ code: string
                   {healthChange > 0 ? '+' : ''}{healthChange} HP
                 </div>
                 <div className="mt-3 space-y-2">
-                  <Progress value={(newHealth / currentPlayer.maxHealth) * 100} className="h-3" />
+                  <Progress value={(newHealth / playerMaxHealth) * 100} className="h-3" />
                   <p className="text-xs text-slate-500">
-                    {newHealth}/{currentPlayer.maxHealth} HP
+                    {newHealth}/{playerMaxHealth} HP
                   </p>
                 </div>
               </CardContent>
@@ -163,7 +316,9 @@ export default function ResultsPage({ params }: { params: Promise<{ code: string
               {topPlayers.map((player, idx) => (
                 <div
                   key={player.id}
-                  className="flex items-center justify-between p-4 bg-slate-50 rounded-lg border hover:shadow-md transition-shadow"
+                  className={`flex items-center justify-between p-4 bg-slate-50 rounded-lg border hover:shadow-md transition-shadow ${
+                    player.id === playerId ? 'ring-2 ring-indigo-400' : ''
+                  }`}
                 >
                   <div className="flex items-center gap-3">
                     <Badge
@@ -209,7 +364,11 @@ export default function ResultsPage({ params }: { params: Promise<{ code: string
           {/* Countdown */}
           <div className="text-center pt-4 border-t">
             <p className="text-sm text-slate-600">
-              Next question in <span className="font-bold text-indigo-600">{countdown}s</span>...
+              {countdown > 0 ? (
+                <>Next question in <span className="font-bold text-indigo-600">{countdown}s</span>...</>
+              ) : (
+                <span className="font-bold text-indigo-600">Loading next question...</span>
+              )}
             </p>
           </div>
         </CardContent>

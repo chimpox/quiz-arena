@@ -11,7 +11,7 @@ import { Alert } from '@/components/ui/alert';
 import { ArrowLeft, Sparkles } from 'lucide-react';
 import Link from 'next/link';
 import { AVATAR_STYLES, COLOR_PALETTES, getAvatarUrl } from '@/lib/game-utils';
-import type { AvatarStyle } from '@/lib/types';
+import type { AvatarStyle, JoinGameAPIResponse, APIErrorResponse } from '@/lib/types';
 
 export default function JoinPage() {
   const router = useRouter();
@@ -42,20 +42,47 @@ export default function JoinPage() {
 
     setIsJoining(true);
 
-    // Simulate joining (replace with actual API call)
-    setTimeout(() => {
+    try {
+      const response = await fetch('/api/game/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          code: gameCode,
+          name: displayName.trim(),
+          avatarStyle,
+          avatarSeed,
+          avatarColor: selectedColor,
+        }),
+      });
+
+      const data = await response.json() as JoinGameAPIResponse | APIErrorResponse;
+
+      if (!data.success) {
+        setError((data as APIErrorResponse).error);
+        setIsJoining(false);
+        return;
+      }
+
+      const result = data as JoinGameAPIResponse;
+
       // Store player info in sessionStorage
       sessionStorage.setItem('playerInfo', JSON.stringify({
-        name: displayName,
+        playerId: result.playerId,
+        playerToken: result.playerToken,
+        name: displayName.trim(),
         avatarStyle,
         avatarSeed,
         avatarColor: selectedColor,
-        gameCode,
+        gameCode: result.code,
       }));
 
       // Navigate to lobby
-      router.push(`/lobby/${gameCode}`);
-    }, 500);
+      router.push(`/lobby/${result.code}`);
+    } catch (err) {
+      console.error('Failed to join game:', err);
+      setError('Failed to join game. Please try again.');
+      setIsJoining(false);
+    }
   };
 
   return (

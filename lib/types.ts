@@ -63,3 +63,58 @@ export interface QuestionResult {
   healthChange: number;
   pointsEarned: number;
 }
+
+// API Response Types
+export interface CreateGameAPIResponse {
+  success: true;
+  code: string;
+  hostId: string;
+  hostToken: string;
+}
+
+export interface JoinGameAPIResponse {
+  success: true;
+  code: string;
+  playerId: string;
+  playerToken: string;
+}
+
+export interface GameAPIResponse {
+  code: string;
+  status: Game['status'];
+  settings: GameSettings;
+  questionsCount: number;
+  currentQuestionIndex: number;
+  players: Player[];
+  currentQuestion?: Question;
+  questions?: Question[];
+}
+
+export interface AnswerAPIResponse {
+  success: true;
+  isCorrect: boolean;
+  pointsEarned: number;
+  healthChange: number;
+}
+
+export interface APIErrorResponse {
+  success: false;
+  error: string;
+}
+
+// Session storage types
+export interface HostSessionInfo {
+  hostId: string;
+  hostToken: string;
+  gameCode: string;
+}
+
+export interface PlayerSessionInfo {
+  playerId: string;
+  playerToken: string;
+  name: string;
+  avatarStyle: AvatarStyle;
+  avatarSeed: string;
+  avatarColor?: string;
+  gameCode: string;
+}

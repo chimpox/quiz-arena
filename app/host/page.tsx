@@ -10,8 +10,46 @@ import { Textarea } from '@/components/ui/textarea';
 import { Alert } from '@/components/ui/alert';
 import { ArrowLeft, Play, Info, Heart, Clock, Zap } from 'lucide-react';
 import Link from 'next/link';
-import { mockGameStore, SAMPLE_QUESTIONS } from '@/lib/mock-game-store';
-import type { GameSettings, Question } from '@/lib/types';
+import type { GameSettings, Question, CreateGameAPIResponse, APIErrorResponse } from '@/lib/types';
+
+// Sample questions for testing
+const SAMPLE_QUESTIONS: Question[] = [
+  {
+    id: '1',
+    text: 'What is the capital of France?',
+    options: ['London', 'Berlin', 'Paris', 'Madrid'],
+    correctIndex: 2,
+    timeLimit: 10,
+  },
+  {
+    id: '2',
+    text: 'Which planet is known as the Red Planet?',
+    options: ['Venus', 'Mars', 'Jupiter', 'Saturn'],
+    correctIndex: 1,
+    timeLimit: 10,
+  },
+  {
+    id: '3',
+    text: 'What is 7 x 8?',
+    options: ['54', '56', '58', '60'],
+    correctIndex: 1,
+    timeLimit: 10,
+  },
+  {
+    id: '4',
+    text: 'Who painted the Mona Lisa?',
+    options: ['Michelangelo', 'Leonardo da Vinci', 'Raphael', 'Donatello'],
+    correctIndex: 1,
+    timeLimit: 10,
+  },
+  {
+    id: '5',
+    text: 'What is the largest ocean on Earth?',
+    options: ['Atlantic', 'Indian', 'Arctic', 'Pacific'],
+    correctIndex: 3,
+    timeLimit: 10,
+  },
+];
 
 export default function HostPage() {
   const router = useRouter();
@@ -26,7 +64,7 @@ export default function HostPage() {
   const [error, setError] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
-  const handleCreateGame = () => {
+  const handleCreateGame = async () => {
     setError('');
 
     // Validate settings
@@ -60,7 +98,7 @@ export default function HostPage() {
           id: `q${idx + 1}`,
           text: q.question || q.text,
           options: q.options || [],
-          correctIndex: q.correct || q.correctIndex || 0,
+          correctIndex: q.correct ?? q.correctIndex ?? 0,
           timeLimit: q.timeLimit || settings.questionTimeLimit,
         }));
 
@@ -79,20 +117,37 @@ export default function HostPage() {
 
     setIsCreating(true);
 
-    // Create game
-    const hostId = `host-${Date.now()}`;
-    const game = mockGameStore.createGame(hostId, settings, questions);
+    try {
+      const response = await fetch('/api/game/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings, questions }),
+      });
 
-    // Store host info
-    sessionStorage.setItem('hostInfo', JSON.stringify({
-      hostId,
-      gameCode: game.code,
-    }));
+      const data = await response.json() as CreateGameAPIResponse | APIErrorResponse;
 
-    // Navigate to lobby
-    setTimeout(() => {
-      router.push(`/lobby/${game.code}`);
-    }, 500);
+      if (!data.success) {
+        setError((data as APIErrorResponse).error);
+        setIsCreating(false);
+        return;
+      }
+
+      const result = data as CreateGameAPIResponse;
+
+      // Store host info in sessionStorage
+      sessionStorage.setItem('hostInfo', JSON.stringify({
+        hostId: result.hostId,
+        hostToken: result.hostToken,
+        gameCode: result.code,
+      }));
+
+      // Navigate to lobby
+      router.push(`/lobby/${result.code}`);
+    } catch (err) {
+      console.error('Failed to create game:', err);
+      setError('Failed to create game. Please try again.');
+      setIsCreating(false);
+    }
   };
 
   const loadSampleQuestions = () => {
@@ -140,7 +195,7 @@ export default function HostPage() {
                 <Heart className="w-4 h-4 text-red-500" />
                 Health System
               </div>
-              
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="startingHealth">Starting Health</Label>
